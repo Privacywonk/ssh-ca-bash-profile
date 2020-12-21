@@ -1,0 +1,82 @@
+ssh_vault () {
+if [[ $# -eq 0 ]] ; then
+    printf 'Usage: ssh_vault destination\n'
+    printf 'Exaple: ssh_vault 8.8.8.8\n'
+    printf 'Note: must supply a username & password for vault. Username needs to exist on destination host"
+    return
+fi
+
+  TTL=30 #source this from vault policy, ask an admin
+  dest=$1
+  read -p 'Vault Username: ' USERINPUT
+  SSH_USER=${USERINPUT}
+  SSH_SERVER=$1
+  VAULT_ADDR="https://VAULT_SERVER/"
+
+
+  #test if keys exist at all for new connection/identity
+  PRIVKEY=.ssh/id_rsa_${SSH_USER}
+  PUBKEY=.ssh/id_rsa_${SSH_USER}.pub
+  if [ ! -f "$PRIVKEY" ] && [ ! -f "$PUBKEY" ]; then
+          #generate keys. -q is to silence output.
+          ssh-keygen -q -t rsa -N "" -C "${SSH_USER}" -f .ssh/id_rsa_${SSH_USER}
+          printf "Generating new keypair with ssh-keygen...\n"
+          get_signature_from_vault
+          clean_vars
+          return
+  fi
+
+
+  #test how old our latest signed key is...if older than $TTL, delete all key material and rekey
+  testTTL=$(echo $(( (`date +%s` - `stat -L --format %Y .ssh/id_rsa_${SSH_USER}.signed.pub`) > (${TTL}*60) )))
+  if [ $testTTL -ne 0 ]; then
+      rm -f .ssh/id_rsa_${SSH_USER}*
+      ssh-keygen -q -t rsa -N "" -C "${SSH_USER}" -f .ssh/id_rsa_${SSH_USER}
+      printf "Generating new keypair with ssh-keygen...\n"
+      get_signature_from_vault
+      clean_vars
+      return
+  else
+      printf "Existing signed key is still valid.\n"
+      printf "ssh -i .ssh/id_rsa_${SSH_USER}.signed.pub -i .ssh/id_rsa_${SSH_USER} ${SSH_USER}@${SSH_SERVER}\n"
+      clean_vars
+  fi
+
+
+}
+
+ get_signature_from_vault() {
+  read -sp 'Vault Password: ' VAULT_PW
+  PUBKEY_PAYLOAD=$(cat .ssh/id_rsa_${SSH_USER}.pub)
+  VAULT_TOKEN=$(curl -s --request POST --data "{\"password\": \"${VAULT_PW}\"}" ${VAULT_ADDR}/v1/auth/userpass/login/${SSH_USER} | jq -r .auth.client_token)
+
+  RESPONSE=$(curl -s --header "X-Vault-Token: ${VAULT_TOKEN}" --request POST --data "{\"public_key\":\"${PUBKEY_PAYLOAD}\",\"valid_principals\":\"${SSH_USER}\"}" $VAULT_ADDR/v1/ssh-client-signer/sign/clientrole)
+  ERRORS=$(jq -r .[] <<< "$RESPONSE")
+  KEY=$(jq -r .data.signed_key <<<"$RESPONSE")
+  if [[ "$ERRORS" == *denied* ]]
+  then
+        printf "[VAULT RESPONSE]: Permission denied. Retry password or contact admin\n"
+        return
+  else
+        printf "\nObtaining freshly signed cert from $VAULT_ADDR\n"
+        echo $KEY > .ssh/id_rsa_${SSH_USER}.signed.pub
+        chmod 400 .ssh/id_rsa_${SSH_USER}*
+        printf "ssh -i .ssh/id_rsa_${SSH_USER}.signed.pub -i .ssh/id_rsa_${SSH_USER} ${SSH_USER}@${SSH_SERVER}\n"
+        clean_vars
+  fi
+}
+
+clean_vars() {
+  #clean up variables
+  unset dest
+  unset SSH_USER
+  unset USERINPUT
+  unset SSH_SERVER
+  unset PRIVKEY
+  unset PUBKEY
+  unset PUBKEY_PAYLOAD
+  unset VAULT_TOKEN
+  unset RESPONSE
+  unset ERRORS
+  unset KEY
+}
