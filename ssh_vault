@@ -59,7 +59,7 @@ fi
         return
   else
         printf "\nObtaining freshly signed cert from $VAULT_ADDR\n"
-        echo $KEY > .ssh/id_rsa_${SSH_USER}.signed.pub
+        echo "$KEY" > .ssh/id_rsa_${SSH_USER}.signed.pub
         chmod 400 .ssh/id_rsa_${SSH_USER}*
         printf "ssh -i .ssh/id_rsa_${SSH_USER}.signed.pub -i .ssh/id_rsa_${SSH_USER} ${SSH_USER}@${SSH_SERVER}\n"
         clean_vars
